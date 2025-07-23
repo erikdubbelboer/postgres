@@ -3039,13 +3039,33 @@ build_with_optimized_scan(Relation heapRelation,
 			TupleTableSlot *slot = table_slot_create(heapRelation, NULL);
 			EState		   *estate;
 			ExprContext	   *econtext;
+			ExprContext	   *predicate_econtext = NULL;
+			ExprState	   *predicate_state = NULL;
 			Datum		   *values;
 			bool		   *isnull;
 			int				natts = indexRelation->rd_att->natts;
+			int				tuples_processed = 0;
 
 			/* Set up expression evaluation context */
 			estate = CreateExecutorState();
 			econtext = GetPerTupleExprContext(estate);
+
+			/* Set up predicate evaluation if needed */
+			if (scan_option->remainingQuals != NIL)
+			{
+				List *qual_exprs;
+
+				predicate_econtext = CreateStandaloneExprContext();
+
+				/* Build the remaining qualification expression */
+				if (list_length(scan_option->remainingQuals) == 1)
+					qual_exprs = (List *) linitial(scan_option->remainingQuals);
+				else
+					qual_exprs = scan_option->remainingQuals;
+
+				/* Prepare the predicate for execution */
+				predicate_state = ExecPrepareExpr((Expr *) qual_exprs, NULL);
+			}
 
 			/* Allocate arrays for index attribute values */
 			values = palloc(natts * sizeof(Datum));
@@ -3067,32 +3087,21 @@ build_with_optimized_scan(Relation heapRelation,
 			heap_tuples++;
 
 			/* Apply any remaining predicates that the index couldn't handle */
-			if (scan_option->remainingQuals != NIL)
+			if (predicate_state != NULL)
 			{
-				ExprContext *econtext;
-				ExprState  *predicate;
-				List	   *qual_exprs;
-				bool		result;
+				bool result;
 
 				/* Set up expression context for evaluating remaining predicates */
-				econtext = CreateStandaloneExprContext();
-				econtext->ecxt_scantuple = slot;
-
-				/* Build the remaining qualification expression */
-				if (list_length(scan_option->remainingQuals) == 1)
-					qual_exprs = (List *) linitial(scan_option->remainingQuals);
-				else
-					qual_exprs = scan_option->remainingQuals;
-
-				/* Prepare the predicate for execution */
-				predicate = ExecPrepareExpr((Expr *) qual_exprs, NULL);
+				predicate_econtext->ecxt_scantuple = slot;
 
 				/* Evaluate the predicate */
-				result = ExecEvalExprSwitchContext(predicate, econtext, &valid_tuple);
+				result = ExecEvalExprSwitchContext(predicate_state, predicate_econtext, &valid_tuple);
 				valid_tuple = (result && valid_tuple);
 
-				/* Clean up */
-				FreeExprContext(econtext, false);
+				/* Reset context periodically to avoid memory leaks */
+				tuples_processed++;
+				if (tuples_processed % 1000 == 0)
+					ResetExprContext(predicate_econtext);
 			}
 			else
 			{
@@ -3121,6 +3130,8 @@ build_with_optimized_scan(Relation heapRelation,
 			/* Clean up resources */
 			pfree(values);
 			pfree(isnull);
+			if (predicate_econtext)
+				FreeExprContext(predicate_econtext, false);
 			FreeExecutorState(estate);
 			ExecDropSingleTupleTableSlot(slot);
 		}

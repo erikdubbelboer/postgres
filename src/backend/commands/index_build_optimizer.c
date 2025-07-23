@@ -81,6 +81,13 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 	if (!enable_index_build_optimization)
 		return NULL;
 
+	/* Skip optimization for concurrent builds due to MVCC correctness concerns */
+	if (indexInfo->ii_Concurrent)
+	{
+		elog(DEBUG1, "Index build optimization: skipping concurrent build for MVCC correctness");
+		return NULL;
+	}
+
 	/* Must have a WHERE predicate */
 	if (indexInfo->ii_Predicate == NIL)
 		return NULL;
@@ -163,6 +170,14 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 		ReleaseSysCache(indexTuple);
 
 		indexRel = index_open(indexoid, AccessShareLock);
+
+		/* Check if access method is supported */
+		if (indexRel->rd_rel->relam != BTREE_AM_OID && indexRel->rd_rel->relam != HASH_AM_OID)
+		{
+			elog(DEBUG1, "Index build optimization: unsupported access method for index %u, skipping", indexoid);
+			index_close(indexRel, AccessShareLock);
+			continue;
+		}
 
 		/* Try to match predicate clauses to this index */
 		if (ExtractIndexQuals(predicate_clauses, indexRel,
