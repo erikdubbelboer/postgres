@@ -90,7 +90,7 @@ extern Oid	index_create(Relation heapRelation,
 						 bool allow_system_table_mods,
 						 bool is_internal,
 						 Oid *constraintId,
-						 IndexScanOption *scan_option);
+						 IndexScanOption * scan_option);
 
 #define	INDEX_CONSTR_CREATE_MARK_AS_PRIMARY	(1 << 0)
 #define	INDEX_CONSTR_CREATE_DEFERRABLE		(1 << 1)
@@ -148,7 +148,7 @@ extern void index_build(Relation heapRelation,
 						IndexInfo *indexInfo,
 						bool isreindex,
 						bool parallel,
-						IndexScanOption *scan_option);
+						IndexScanOption * scan_option);
 
 extern void validate_index(Oid heapId, Oid indexId, Snapshot snapshot);
 

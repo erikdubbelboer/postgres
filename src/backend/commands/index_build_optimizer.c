@@ -45,18 +45,18 @@
 #include "access/hash.h"
 
 /* GUC parameter to enable/disable optimization */
-bool enable_index_build_optimization = true;
+bool		enable_index_build_optimization = true;
 
 
 /* Function prototypes */
 static List *AnalyzeExistingIndexesForPredicate(Relation heapRel,
-											   List *predicate_clauses);
+												List *predicate_clauses);
 static Cost EstimateIndexScanCost(Relation heapRel, Relation indexRel,
-								 List *indexQuals, double selectivity);
+								  List *indexQuals, double selectivity);
 static Cost EstimateSequentialScanCost(Relation heapRel);
-static IndexScanOption *ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel);
+static IndexScanOption * ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel);
 static bool ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
-							 List **indexQuals, List **remainingQuals);
+							  List **indexQuals, List **remainingQuals);
 static ScanKey BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built);
 static double EstimateClauseSelectivity(Node *clause, Relation heapRel);
 
@@ -94,12 +94,12 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 		return NULL;
 
 	/*
-	 * Skip optimization for concurrent builds due to MVCC correctness concerns.
-	 * Concurrent index builds use a different snapshot management strategy where
-	 * they need to see all committed tuples that exist at different points in time
-	 * during the build process. Using an existing index to filter tuples could
-	 * miss tuples that should be visible to the concurrent build, leading to
-	 * incomplete or inconsistent indexes.
+	 * Skip optimization for concurrent builds due to MVCC correctness
+	 * concerns. Concurrent index builds use a different snapshot management
+	 * strategy where they need to see all committed tuples that exist at
+	 * different points in time during the build process. Using an existing
+	 * index to filter tuples could miss tuples that should be visible to the
+	 * concurrent build, leading to incomplete or inconsistent indexes.
 	 */
 	if (indexInfo->ii_Concurrent)
 	{
@@ -161,7 +161,7 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 		/* Check if the index is valid and ready for use */
 		indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
 		if (!HeapTupleIsValid(indexTuple))
-			continue; /* Index doesn't exist anymore */
+			continue;			/* Index doesn't exist anymore */
 
 		indexForm = (Form_pg_index) GETSTRUCT(indexTuple);
 
@@ -174,10 +174,10 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 
 		/*
 		 * Skip partial indexes for now - they have their own predicates which
-		 * would require more complex analysis to determine if the new predicate
-		 * is a subset of the existing one. Future enhancement could support
-		 * cases where existing partial index has a broader predicate than
-		 * the new index being built.
+		 * would require more complex analysis to determine if the new
+		 * predicate is a subset of the existing one. Future enhancement could
+		 * support cases where existing partial index has a broader predicate
+		 * than the new index being built.
 		 */
 		if (!heap_attisnull(indexTuple, Anum_pg_index_indpred, NULL))
 		{
@@ -210,7 +210,7 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 
 		/* Try to match predicate clauses to this index */
 		if (ExtractIndexQuals(predicate_clauses, indexRel,
-							 &indexQuals, &remainingQuals))
+							  &indexQuals, &remainingQuals))
 		{
 			/* Create option for this index */
 			option = (IndexScanOption *) palloc0(sizeof(IndexScanOption));
@@ -220,9 +220,9 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 
 			/* Estimate selectivity and cost */
 			option->selectivity = EstimateClauseSelectivity(
-				(Node *) indexQuals, heapRel);
+															(Node *) indexQuals, heapRel);
 			option->estimated_cost = EstimateIndexScanCost(
-				heapRel, indexRel, indexQuals, option->selectivity);
+														   heapRel, indexRel, indexQuals, option->selectivity);
 
 			/* Prepare scan keys */
 			option->scankeys = BuildScanKeysFromQuals(indexQuals, indexRel, &option->nkeys);
@@ -246,7 +246,7 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
  */
 static bool
 ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
-				 List **indexQuals, List **remainingQuals)
+				  List **indexQuals, List **remainingQuals)
 {
 	ListCell   *lc;
 	bool		found_useful_qual = false;
@@ -293,8 +293,8 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 					if (indexRel->rd_index->indkey.values[i] == var->varattno)
 					{
 						/* Check if the operator is supported by this index */
-						Oid opfamily = indexRel->rd_opfamily[i];
-						Oid opno = opexpr->opno;
+						Oid			opfamily = indexRel->rd_opfamily[i];
+						Oid			opno = opexpr->opno;
 
 						if (get_op_opfamily_strategy(opno, opfamily) > 0)
 						{
@@ -312,13 +312,13 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 
 			if (list_length(saop->args) == 2 && saop->useOr)
 			{
-				Node *leftarg = linitial(saop->args);
-				Node *rightarg = lsecond(saop->args);
+				Node	   *leftarg = linitial(saop->args);
+				Node	   *rightarg = lsecond(saop->args);
 
 				if (IsA(leftarg, Var) && IsA(rightarg, Const))
 				{
-					Var *var = (Var *) leftarg;
-					int i;
+					Var		   *var = (Var *) leftarg;
+					int			i;
 
 					/* Check if this variable matches an indexed column */
 					for (i = 0; i < indexRel->rd_index->indnatts; i++)
@@ -326,8 +326,8 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 						if (indexRel->rd_index->indkey.values[i] == var->varattno)
 						{
 							/* Check if the array operator is supported */
-							Oid opfamily = indexRel->rd_opfamily[i];
-							Oid opno = saop->opno;
+							Oid			opfamily = indexRel->rd_opfamily[i];
+							Oid			opno = saop->opno;
 
 							if (get_op_opfamily_strategy(opno, opfamily) > 0)
 							{
@@ -342,12 +342,12 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 		else if (IsA(clause, NullTest))
 		{
 			/* Handle IS NULL / IS NOT NULL */
-			NullTest *nulltest = (NullTest *) clause;
+			NullTest   *nulltest = (NullTest *) clause;
 
 			if (IsA(nulltest->arg, Var))
 			{
-				Var *var = (Var *) nulltest->arg;
-				int i;
+				Var		   *var = (Var *) nulltest->arg;
+				int			i;
 
 				/* Check if this variable matches an indexed column */
 				for (i = 0; i < indexRel->rd_index->indnatts; i++)
@@ -430,8 +430,8 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 			{
 				if (indexRel->rd_index->indkey.values[j] == var->varattno)
 				{
-					attno = j + 1; /* ScanKey uses 1-based attribute numbers */
-					keyno = j;     /* 0-based for accessing index metadata */
+					attno = j + 1;	/* ScanKey uses 1-based attribute numbers */
+					keyno = j;	/* 0-based for accessing index metadata */
 					break;
 				}
 			}
@@ -453,24 +453,39 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 					get_op_opfamily_properties(opno, opfamily, false,
 											   &op_strategy, &lefttype, &righttype);
 
-					/* Get the procedure (function) for this operator based on access method */
+					/*
+					 * Get the procedure (function) for this operator based on
+					 * access method
+					 */
 					switch (indexRel->rd_rel->relam)
 					{
 						case BTREE_AM_OID:
 							proc = get_opfamily_proc(opfamily, opcintype, opcintype,
-													BTORDER_PROC);
+													 BTORDER_PROC);
 							break;
 						case HASH_AM_OID:
-							/* Hash indexes use hash functions instead of comparison */
+
+							/*
+							 * Hash indexes use hash functions instead of
+							 * comparison
+							 */
 							proc = get_opfamily_proc(opfamily, opcintype, opcintype,
-													HASHSTANDARD_PROC);
+													 HASHSTANDARD_PROC);
 							break;
 						case GIST_AM_OID:
 						case GIN_AM_OID:
 						case SPGIST_AM_OID:
 						case BRIN_AM_OID:
-							/* These access methods have more complex operator semantics */
-							/* For now, skip them to keep the implementation simple */
+
+							/*
+							 * These access methods have more complex operator
+							 * semantics
+							 */
+
+							/*
+							 * For now, skip them to keep the implementation
+							 * simple
+							 */
 							elog(DEBUG1, "Access method %u not yet supported for optimization",
 								 indexRel->rd_rel->relam);
 							proc = InvalidOid;
@@ -494,10 +509,10 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 
 					/* Build the scan key */
 					ScanKeyInit(&scankeys[i],
-							   attno,
-							   op_strategy,
-							   proc,
-							   const_val->constvalue);
+								attno,
+								op_strategy,
+								proc,
+								const_val->constvalue);
 
 					/* Handle NULL values */
 					if (const_val->constisnull)
@@ -540,7 +555,7 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
  */
 static Cost
 EstimateIndexScanCost(Relation heapRel, Relation indexRel,
-					 List *indexQuals, double selectivity)
+					  List *indexQuals, double selectivity)
 {
 	Cost		startup_cost = 0;
 	Cost		run_cost = 0;
@@ -551,7 +566,7 @@ EstimateIndexScanCost(Relation heapRel, Relation indexRel,
 	/* Get basic relation statistics */
 	heap_tuples = heapRel->rd_rel->reltuples;
 	if (heap_tuples <= 0)
-		heap_tuples = 1000; /* default estimate */
+		heap_tuples = 1000;		/* default estimate */
 
 	index_pages = indexRel->rd_rel->relpages;
 	if (index_pages <= 0)
@@ -561,7 +576,7 @@ EstimateIndexScanCost(Relation heapRel, Relation indexRel,
 	index_tuples = heap_tuples * selectivity;
 
 	/* Index access cost */
-	startup_cost += random_page_cost; /* initial index page */
+	startup_cost += random_page_cost;	/* initial index page */
 	run_cost += (index_pages * selectivity) * random_page_cost;
 
 	/* Heap access cost for tuples found */
@@ -630,7 +645,7 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 
 			filtered_tuples = option->selectivity * heap_tuples;
 			remaining_cost = filtered_tuples * cpu_operator_cost *
-							list_length(option->remainingQuals);
+				list_length(option->remainingQuals);
 		}
 
 		total_cost = option->estimated_cost + remaining_cost;
@@ -668,7 +683,8 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 
 		foreach(lc, clauses)
 		{
-			Node *subclause = (Node *) lfirst(lc);
+			Node	   *subclause = (Node *) lfirst(lc);
+
 			/*
 			 * Recursively estimate each subclause. For now we use a simple
 			 * fixed estimate. In a full implementation, this should use

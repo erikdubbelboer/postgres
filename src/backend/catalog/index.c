@@ -745,7 +745,7 @@ index_create(Relation heapRelation,
 			 bool allow_system_table_mods,
 			 bool is_internal,
 			 Oid *constraintId,
-			 IndexScanOption *scan_option)
+			 IndexScanOption * scan_option)
 {
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
@@ -1465,7 +1465,8 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId,
 							  true, /* allow table to be a system catalog? */
 							  false,	/* is_internal? */
 							  NULL,
-							  NULL); /* no scan optimization for concurrent build */
+							  NULL);	/* no scan optimization for concurrent
+										 * build */
 
 	/* Close the relations used and clean up */
 	index_close(indexRelation, NoLock);
@@ -2992,17 +2993,17 @@ index_update_stats(Relation rel,
  */
 static IndexBuildResult *
 build_with_optimized_scan(Relation heapRelation,
-							Relation indexRelation,
-							IndexInfo *indexInfo,
-							IndexScanOption *scan_option)
+						  Relation indexRelation,
+						  IndexInfo *indexInfo,
+						  IndexScanOption * scan_option)
 {
-	Relation	  filterIndexRel = NULL;
+	Relation	filterIndexRel = NULL;
 	IndexScanDesc scan = NULL;
-	Snapshot	  snapshot = NULL;
-	double		  reltuples = 0;
-	double		  heap_tuples = 0;
-	Oid			  save_userid;
-	int			  save_sec_context;
+	Snapshot	snapshot = NULL;
+	double		reltuples = 0;
+	double		heap_tuples = 0;
+	Oid			save_userid;
+	int			save_sec_context;
 
 	elog(DEBUG1, "Index build optimization: using existing index OID %u for filtering",
 		 scan_option->indexOid);
@@ -3022,15 +3023,15 @@ build_with_optimized_scan(Relation heapRelation,
 	{
 		/* Declare all variables at the beginning of the block */
 		TupleTableSlot *slot;
-		EState		   *estate;
-		ExprContext	   *econtext;
-		ExprContext	   *predicate_econtext = NULL;
-		ExprState	   *predicate_state = NULL;
-		Expr		   *qual_expr;
-		Datum		   *values;
-		bool		   *isnull;
-		int				natts = indexRelation->rd_att->natts;
-		int				tuples_processed = 0;
+		EState	   *estate;
+		ExprContext *econtext;
+		ExprContext *predicate_econtext = NULL;
+		ExprState  *predicate_state = NULL;
+		Expr	   *qual_expr;
+		Datum	   *values;
+		bool	   *isnull;
+		int			natts = indexRelation->rd_att->natts;
+		int			tuples_processed = 0;
 
 		/* Get active snapshot and open the existing index for scanning */
 		snapshot = GetActiveSnapshot();
@@ -3083,7 +3084,7 @@ build_with_optimized_scan(Relation heapRelation,
 			found_tuple = index_getnext_slot(scan, ForwardScanDirection, slot);
 			if (!found_tuple)
 			{
-				break; /* No more tuples */
+				break;			/* No more tuples */
 			}
 
 			heap_tuples++;
@@ -3091,10 +3092,13 @@ build_with_optimized_scan(Relation heapRelation,
 			/* Apply any remaining predicates that the index couldn't handle */
 			if (predicate_state != NULL)
 			{
-				bool result;
-				bool is_null;
+				bool		result;
+				bool		is_null;
 
-				/* Set up expression context for evaluating remaining predicates */
+				/*
+				 * Set up expression context for evaluating remaining
+				 * predicates
+				 */
 				predicate_econtext->ecxt_scantuple = slot;
 
 				/* Evaluate the predicate */
@@ -3117,21 +3121,21 @@ build_with_optimized_scan(Relation heapRelation,
 				reltuples++;
 
 				/*
-				 * Extract index values from the heap tuple.
-				 * TODO: For simple column references, this could be optimized
-				 * by caching expression evaluation or using direct slot access
-				 * rather than going through the full FormIndexDatum machinery.
+				 * Extract index values from the heap tuple. TODO: For simple
+				 * column references, this could be optimized by caching
+				 * expression evaluation or using direct slot access rather
+				 * than going through the full FormIndexDatum machinery.
 				 */
 				econtext->ecxt_scantuple = slot;
 				FormIndexDatum(indexInfo, slot, estate, values, isnull);
 
 				/* Insert tuple into the new index */
 				index_insert(indexRelation, values, isnull,
-							&slot->tts_tid,
-							heapRelation,
-							indexInfo->ii_Unique ?
-								UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							false, indexInfo);
+							 &slot->tts_tid,
+							 heapRelation,
+							 indexInfo->ii_Unique ?
+							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+							 false, indexInfo);
 			}
 		}
 
@@ -3176,6 +3180,7 @@ build_with_optimized_scan(Relation heapRelation,
 	/* Return build statistics */
 	{
 		IndexBuildResult *result = palloc(sizeof(IndexBuildResult));
+
 		result->heap_tuples = heap_tuples;
 		result->index_tuples = reltuples;
 
@@ -3208,7 +3213,7 @@ index_build(Relation heapRelation,
 			IndexInfo *indexInfo,
 			bool isreindex,
 			bool parallel,
-			IndexScanOption *scan_option)
+			IndexScanOption * scan_option)
 {
 	IndexBuildResult *stats;
 	Oid			save_userid;
@@ -3278,14 +3283,14 @@ index_build(Relation heapRelation,
 	}
 
 	/*
-	 * Call the access method's build procedure, potentially using
-	 * optimized scanning if scan_option is provided
+	 * Call the access method's build procedure, potentially using optimized
+	 * scanning if scan_option is provided
 	 */
 	if (scan_option && scan_option->indexOid != InvalidOid)
 	{
 		/* Use optimized index-based scanning */
 		stats = build_with_optimized_scan(heapRelation, indexRelation,
-											indexInfo, scan_option);
+										  indexInfo, scan_option);
 	}
 	else
 	{

@@ -1254,14 +1254,14 @@ DefineIndex(Oid tableId,
 
 	indexRelationId =
 		index_create(rel, indexRelationName, indexRelationId, parentIndexId,
-						parentConstraintId,
-						stmt->oldNumber, indexInfo, indexColNames,
-						accessMethodId, tablespaceId,
-						collationIds, opclassIds, opclassOptions,
-						coloptions, NULL, reloptions,
-						flags, constr_flags,
-						allowSystemTableMods, !check_rights,
-						&createdConstraintId, scan_option);
+					 parentConstraintId,
+					 stmt->oldNumber, indexInfo, indexColNames,
+					 accessMethodId, tablespaceId,
+					 collationIds, opclassIds, opclassOptions,
+					 coloptions, NULL, reloptions,
+					 flags, constr_flags,
+					 allowSystemTableMods, !check_rights,
+					 &createdConstraintId, scan_option);
 
 	ObjectAddressSet(address, RelationRelationId, indexRelationId);
 
