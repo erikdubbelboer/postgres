@@ -3035,41 +3035,40 @@ build_with_optimized_scan(Relation heapRelation,
 							   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
 		/* Create a slot for receiving tuples - outside loop for efficiency */
+		TupleTableSlot *slot = table_slot_create(heapRelation, NULL);
+		EState		   *estate;
+		ExprContext	   *econtext;
+		ExprContext	   *predicate_econtext = NULL;
+		ExprState	   *predicate_state = NULL;
+		Datum		   *values;
+		bool		   *isnull;
+		int				natts = indexRelation->rd_att->natts;
+		int				tuples_processed = 0;
+
+		/* Set up expression evaluation context */
+		estate = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+
+		/* Set up predicate evaluation if needed */
+		if (scan_option->remainingQuals != NIL)
 		{
-			TupleTableSlot *slot = table_slot_create(heapRelation, NULL);
-			EState		   *estate;
-			ExprContext	   *econtext;
-			ExprContext	   *predicate_econtext = NULL;
-			ExprState	   *predicate_state = NULL;
-			Datum		   *values;
-			bool		   *isnull;
-			int				natts = indexRelation->rd_att->natts;
-			int				tuples_processed = 0;
+			Expr *qual_expr;
 
-			/* Set up expression evaluation context */
-			estate = CreateExecutorState();
-			econtext = GetPerTupleExprContext(estate);
+			predicate_econtext = CreateStandaloneExprContext();
 
-			/* Set up predicate evaluation if needed */
-			if (scan_option->remainingQuals != NIL)
-			{
-				List *qual_exprs;
+			/* Build the remaining qualification expression */
+			if (list_length(scan_option->remainingQuals) == 1)
+				qual_expr = (Expr *) linitial(scan_option->remainingQuals);
+			else
+				qual_expr = make_ands_explicit(scan_option->remainingQuals);
 
-				predicate_econtext = CreateStandaloneExprContext();
+			/* Prepare the predicate for execution */
+			predicate_state = ExecPrepareExpr(qual_expr, NULL);
+		}
 
-				/* Build the remaining qualification expression */
-				if (list_length(scan_option->remainingQuals) == 1)
-					qual_exprs = (List *) linitial(scan_option->remainingQuals);
-				else
-					qual_exprs = scan_option->remainingQuals;
-
-				/* Prepare the predicate for execution */
-				predicate_state = ExecPrepareExpr((Expr *) qual_exprs, NULL);
-			}
-
-			/* Allocate arrays for index attribute values */
-			values = palloc(natts * sizeof(Datum));
-			isnull = palloc(natts * sizeof(bool));
+		/* Allocate arrays for index attribute values */
+		values = palloc(natts * sizeof(Datum));
+		isnull = palloc(natts * sizeof(bool));
 
 		/* Scan tuples using the existing index and apply remaining predicates */
 		for (;;)
@@ -3090,13 +3089,14 @@ build_with_optimized_scan(Relation heapRelation,
 			if (predicate_state != NULL)
 			{
 				bool result;
+				bool is_null;
 
 				/* Set up expression context for evaluating remaining predicates */
 				predicate_econtext->ecxt_scantuple = slot;
 
 				/* Evaluate the predicate */
-				result = ExecEvalExprSwitchContext(predicate_state, predicate_econtext, &valid_tuple);
-				valid_tuple = (result && valid_tuple);
+				result = ExecEvalExprSwitchContext(predicate_state, predicate_econtext, &is_null);
+				valid_tuple = (DatumGetBool(result) && !is_null);
 
 				/* Reset context periodically to avoid memory leaks */
 				tuples_processed++;
@@ -3125,7 +3125,6 @@ build_with_optimized_scan(Relation heapRelation,
 								UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
 							false, indexInfo);
 			}
-		}
 
 			/* Clean up resources */
 			pfree(values);
@@ -3146,8 +3145,7 @@ build_with_optimized_scan(Relation heapRelation,
 			index_endscan(scan);
 		if (filterIndexRel)
 			index_close(filterIndexRel, AccessShareLock);
-		if (snapshot)
-			UnregisterSnapshot(snapshot);
+		/* Note: snapshot from GetActiveSnapshot() should not be unregistered */
 
 		/* Restore userid on error */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
@@ -3165,7 +3163,7 @@ build_with_optimized_scan(Relation heapRelation,
 	/* Clean up */
 	index_endscan(scan);
 	index_close(filterIndexRel, AccessShareLock);
-	UnregisterSnapshot(snapshot);
+	/* Note: snapshot from GetActiveSnapshot() should not be unregistered */
 
 	/* Return build statistics */
 	{

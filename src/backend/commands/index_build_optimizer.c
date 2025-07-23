@@ -67,6 +67,19 @@ static double EstimateClauseSelectivity(Node *clause, Relation heapRel);
  * Main entry point for analyzing optimization opportunities for
  * CREATE INDEX WHERE statements.
  *
+ * The core optimization: instead of scanning the entire table to find rows
+ * matching the WHERE predicate, use an existing index to efficiently locate
+ * candidate rows, then filter and build the new index from that smaller set.
+ *
+ * For example, with a table having an index on 'status' and creating:
+ *   CREATE INDEX ... WHERE status = 'active'
+ * We can use the status index to find only 'active' rows rather than
+ * scanning every row in the table.
+ *
+ * The decision is cost-based: we estimate the cost of index scan + filtering
+ * versus full table scan, and only proceed if the index scan is significantly
+ * cheaper (controlled by a threshold factor).
+ *
  * Returns an IndexScanOption if optimization is beneficial, NULL otherwise.
  */
 IndexScanOption *
@@ -153,14 +166,24 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 			continue;
 		}
 
-		/* Skip partial indexes (they have their own predicates) */
+		/*
+		 * Skip partial indexes for now - they have their own predicates which
+		 * would require more complex analysis to determine if the new predicate
+		 * is a subset of the existing one. Future enhancement could support
+		 * cases where existing partial index has a broader predicate than
+		 * the new index being built.
+		 */
 		if (!heap_attisnull(indexTuple, Anum_pg_index_indpred, NULL))
 		{
 			ReleaseSysCache(indexTuple);
 			continue;
 		}
 
-		/* Skip expression indexes for now (more complex to handle) */
+		/*
+		 * Skip expression indexes for now - matching predicates against
+		 * expression indexes requires more sophisticated analysis of the
+		 * expressions. Future enhancement could support simple cases.
+		 */
 		if (!heap_attisnull(indexTuple, Anum_pg_index_indexprs, NULL))
 		{
 			ReleaseSysCache(indexTuple);
