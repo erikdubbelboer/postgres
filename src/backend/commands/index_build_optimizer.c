@@ -55,7 +55,7 @@ static List *AnalyzeExistingIndexesForPredicate(Relation heapRel,
 static Cost EstimateIndexScanCost(Relation heapRel, Relation indexRel, 
 								 List *indexQuals, double selectivity);
 static Cost EstimateSequentialScanCost(Relation heapRel);
-static IndexScanOption *ChooseOptimalScanMethod(List *options, Cost seqscan_cost);
+static IndexScanOption *ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel);
 static bool ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 							 List **indexQuals, List **remainingQuals);
 static ScanKey BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built);
@@ -101,7 +101,7 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 	seqscan_cost = EstimateSequentialScanCost(heapRel);
 
 	/* Choose the best option */
-	best_option = ChooseOptimalScanMethod(index_options, seqscan_cost);
+	best_option = ChooseOptimalScanMethod(index_options, seqscan_cost, heapRel);
 
 	return best_option;
 }
@@ -562,7 +562,7 @@ EstimateSequentialScanCost(Relation heapRel)
  * Choose the best index scan option, or return NULL to use sequential scan.
  */
 static IndexScanOption *
-ChooseOptimalScanMethod(List *options, Cost seqscan_cost)
+ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 {
 	IndexScanOption *best_option = NULL;
 	Cost		best_cost = seqscan_cost;
@@ -578,7 +578,13 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost)
 		
 		if (option->remainingQuals != NIL)
 		{
-			double		filtered_tuples = option->selectivity * 1000; /* TODO: get actual tuple count */
+			double		heap_tuples = heapRel->rd_rel->reltuples;
+			double		filtered_tuples;
+
+			if (heap_tuples <= 0)
+				heap_tuples = 1000; /* fallback for empty relations */
+
+			filtered_tuples = option->selectivity * heap_tuples;
 			remaining_cost = filtered_tuples * cpu_operator_cost * 
 							list_length(option->remainingQuals);
 		}
