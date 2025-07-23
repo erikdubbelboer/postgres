@@ -3056,11 +3056,30 @@ build_with_optimized_scan(Relation heapRelation,
 			/* Apply any remaining predicates that the index couldn't handle */
 			if (scan_option->remainingQuals != NIL)
 			{
-				/* For now, we'll consider this tuple valid if index found it
-				 * In a complete implementation, we would set up an expression
-				 * context and evaluate the remaining predicates here
-				 */
-				valid_tuple = true; /* Simplified - assume remaining preds pass */
+				ExprContext *econtext;
+				ExprState  *predicate;
+				List	   *qual_exprs;
+				bool		result;
+
+				/* Set up expression context for evaluating remaining predicates */
+				econtext = CreateStandaloneExprContext();
+				econtext->ecxt_scantuple = slot;
+
+				/* Build the remaining qualification expression */
+				if (list_length(scan_option->remainingQuals) == 1)
+					qual_exprs = (List *) linitial(scan_option->remainingQuals);
+				else
+					qual_exprs = scan_option->remainingQuals;
+
+				/* Prepare the predicate for execution */
+				predicate = ExecPrepareExpr((Expr *) qual_exprs, NULL);
+
+				/* Evaluate the predicate */
+				result = ExecEvalExprSwitchContext(predicate, econtext, &valid_tuple);
+				valid_tuple = (result && valid_tuple);
+
+				/* Clean up */
+				FreeExprContext(econtext, false);
 			}
 			else
 			{
