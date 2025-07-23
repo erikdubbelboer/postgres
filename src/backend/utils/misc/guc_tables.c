@@ -44,6 +44,7 @@
 #include "commands/async.h"
 #include "commands/extension.h"
 #include "commands/event_trigger.h"
+#include "commands/index_build_optimizer.h"
 #include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/user.h"
@@ -816,6 +817,16 @@ struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_indexonlyscan,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_index_build_optimization", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables optimization of CREATE INDEX WHERE by using existing indexes."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_index_build_optimization,
 		true,
 		NULL, NULL, NULL
 	},

@@ -41,6 +41,7 @@
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/index_build_optimizer.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -590,6 +591,7 @@ DefineIndex(Oid tableId,
 	Oid			root_save_userid;
 	int			root_save_sec_context;
 	int			root_save_nestlevel;
+	IndexScanOption *scan_option;
 
 	root_save_nestlevel = NewGUCNestLevel();
 
@@ -1242,16 +1244,24 @@ DefineIndex(Oid tableId,
 	if (stmt->iswithoutoverlaps)
 		constr_flags |= INDEX_CONSTR_CREATE_WITHOUT_OVERLAPS;
 
+	/*
+	 * Analyze optimization opportunities for partial indexes
+	 */
+	if (indexInfo->ii_Predicate != NIL)
+		scan_option = AnalyzeIndexBuildOptimization(rel, indexInfo);
+	else
+		scan_option = NULL;
+
 	indexRelationId =
 		index_create(rel, indexRelationName, indexRelationId, parentIndexId,
-					 parentConstraintId,
-					 stmt->oldNumber, indexInfo, indexColNames,
-					 accessMethodId, tablespaceId,
-					 collationIds, opclassIds, opclassOptions,
-					 coloptions, NULL, reloptions,
-					 flags, constr_flags,
-					 allowSystemTableMods, !check_rights,
-					 &createdConstraintId);
+						parentConstraintId,
+						stmt->oldNumber, indexInfo, indexColNames,
+						accessMethodId, tablespaceId,
+						collationIds, opclassIds, opclassOptions,
+						coloptions, NULL, reloptions,
+						flags, constr_flags,
+						allowSystemTableMods, !check_rights,
+						&createdConstraintId, scan_option);
 
 	ObjectAddressSet(address, RelationRelationId, indexRelationId);
 

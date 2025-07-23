@@ -28,6 +28,7 @@ OBJS = \
 	copyfromparse.o \
 	copyto.o \
 	createas.o \
+	index_build_optimizer.o \
 	dbcommands.o \
 	define.o \
 	discard.o \

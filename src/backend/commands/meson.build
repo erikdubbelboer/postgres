@@ -28,6 +28,7 @@ backend_sources += files(
   'extension.c',
   'foreigncmds.c',
   'functioncmds.c',
+  'index_build_optimizer.c',
   'indexcmds.c',
   'lockcmds.c',
   'matview.c',
