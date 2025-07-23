@@ -3037,6 +3037,19 @@ build_with_optimized_scan(Relation heapRelation,
 		/* Create a slot for receiving tuples - outside loop for efficiency */
 		{
 			TupleTableSlot *slot = table_slot_create(heapRelation, NULL);
+			EState		   *estate;
+			ExprContext	   *econtext;
+			Datum		   *values;
+			bool		   *isnull;
+			int				natts = indexRelation->rd_att->natts;
+
+			/* Set up expression evaluation context */
+			estate = CreateExecutorState();
+			econtext = GetPerTupleExprContext(estate);
+
+			/* Allocate arrays for index attribute values */
+			values = palloc(natts * sizeof(Datum));
+			isnull = palloc(natts * sizeof(bool));
 
 		/* Scan tuples using the existing index and apply remaining predicates */
 		for (;;)
@@ -3090,18 +3103,25 @@ build_with_optimized_scan(Relation heapRelation,
 			if (valid_tuple)
 			{
 				reltuples++;
-				/*
-				 * In a complete implementation, we would insert this tuple
-				 * into the new index here using the access method's
-				 * tuple insertion functions.
-				 *
-				 * For now, we just count the valid tuples to demonstrate
-				 * the optimization concept.
-				 */
+
+				/* Extract index values from the heap tuple */
+				econtext->ecxt_scantuple = slot;
+				FormIndexDatum(indexInfo, slot, estate, values, isnull);
+
+				/* Insert tuple into the new index */
+				index_insert(indexRelation, values, isnull,
+							&slot->tts_tid,
+							heapRelation,
+							indexInfo->ii_Unique ?
+								UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+							false, indexInfo);
 			}
 		}
 
-			/* Clean up the slot after the loop */
+			/* Clean up resources */
+			pfree(values);
+			pfree(isnull);
+			FreeExecutorState(estate);
 			ExecDropSingleTupleTableSlot(slot);
 		}
 
@@ -3136,12 +3156,17 @@ build_with_optimized_scan(Relation heapRelation,
 	index_close(filterIndexRel, AccessShareLock);
 	UnregisterSnapshot(snapshot);
 
-	/*
-	 * For now, after gathering statistics, fall back to normal index build
-	 * In a complete implementation, we would return the result from our optimized build
-	 */
-	elog(DEBUG1, "Index build optimization: completing with normal build for correctness");
-	return indexRelation->rd_indam->ambuild(heapRelation, indexRelation, indexInfo);
+	/* Return build statistics */
+	{
+		IndexBuildResult *result = palloc(sizeof(IndexBuildResult));
+		result->heap_tuples = heap_tuples;
+		result->index_tuples = reltuples;
+
+		elog(DEBUG1, "Index build optimization: completed optimized build with %.0f index tuples from %.0f heap tuples",
+			 reltuples, heap_tuples);
+
+		return result;
+	}
 }
 
 /*
