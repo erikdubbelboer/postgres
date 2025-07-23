@@ -3020,13 +3020,26 @@ build_with_optimized_scan(Relation heapRelation,
 
 	PG_TRY();
 	{
+		/* Declare all variables at the beginning of the block */
+		TupleTableSlot *slot;
+		EState		   *estate;
+		ExprContext	   *econtext;
+		ExprContext	   *predicate_econtext = NULL;
+		ExprState	   *predicate_state = NULL;
+		Expr		   *qual_expr;
+		Datum		   *values;
+		bool		   *isnull;
+		int				natts = indexRelation->rd_att->natts;
+		int				tuples_processed = 0;
+
 		/* Get active snapshot and open the existing index for scanning */
 		snapshot = GetActiveSnapshot();
 		filterIndexRel = index_open(scan_option->indexOid, AccessShareLock);
 
-		/* Start index scan with our prepared scan keys */
+		/* Start index scan */
 		scan = index_beginscan(heapRelation, filterIndexRel, snapshot, NULL,
 							   scan_option->nkeys, 0);
+		/* Set up scan keys */
 		index_rescan(scan, scan_option->scankeys, scan_option->nkeys, NULL, 0);
 
 		/* Switch to the table owner's userid for checking permissions */
@@ -3035,15 +3048,7 @@ build_with_optimized_scan(Relation heapRelation,
 							   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
 		/* Create a slot for receiving tuples - outside loop for efficiency */
-		TupleTableSlot *slot = table_slot_create(heapRelation, NULL);
-		EState		   *estate;
-		ExprContext	   *econtext;
-		ExprContext	   *predicate_econtext = NULL;
-		ExprState	   *predicate_state = NULL;
-		Datum		   *values;
-		bool		   *isnull;
-		int				natts = indexRelation->rd_att->natts;
-		int				tuples_processed = 0;
+		slot = table_slot_create(heapRelation, NULL);
 
 		/* Set up expression evaluation context */
 		estate = CreateExecutorState();
@@ -3052,8 +3057,6 @@ build_with_optimized_scan(Relation heapRelation,
 		/* Set up predicate evaluation if needed */
 		if (scan_option->remainingQuals != NIL)
 		{
-			Expr *qual_expr;
-
 			predicate_econtext = CreateStandaloneExprContext();
 
 			/* Build the remaining qualification expression */
@@ -3113,7 +3116,12 @@ build_with_optimized_scan(Relation heapRelation,
 			{
 				reltuples++;
 
-				/* Extract index values from the heap tuple */
+				/*
+				 * Extract index values from the heap tuple.
+				 * TODO: For simple column references, this could be optimized
+				 * by caching expression evaluation or using direct slot access
+				 * rather than going through the full FormIndexDatum machinery.
+				 */
 				econtext->ecxt_scantuple = slot;
 				FormIndexDatum(indexInfo, slot, estate, values, isnull);
 
@@ -3125,15 +3133,15 @@ build_with_optimized_scan(Relation heapRelation,
 								UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
 							false, indexInfo);
 			}
-
-			/* Clean up resources */
-			pfree(values);
-			pfree(isnull);
-			if (predicate_econtext)
-				FreeExprContext(predicate_econtext, false);
-			FreeExecutorState(estate);
-			ExecDropSingleTupleTableSlot(slot);
 		}
+
+		/* Clean up resources after loop completion */
+		pfree(values);
+		pfree(isnull);
+		if (predicate_econtext)
+			FreeExprContext(predicate_econtext, false);
+		FreeExecutorState(estate);
+		ExecDropSingleTupleTableSlot(slot);
 
 		elog(DEBUG1, "Index build optimization: found %.0f candidate tuples via index scan",
 			 heap_tuples);

@@ -41,7 +41,6 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
-#include "catalog/pg_index.h"
 #include "catalog/pg_am_d.h"
 #include "access/hash.h"
 
@@ -94,7 +93,14 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 	if (!enable_index_build_optimization)
 		return NULL;
 
-	/* Skip optimization for concurrent builds due to MVCC correctness concerns */
+	/*
+	 * Skip optimization for concurrent builds due to MVCC correctness concerns.
+	 * Concurrent index builds use a different snapshot management strategy where
+	 * they need to see all committed tuples that exist at different points in time
+	 * during the build process. Using an existing index to filter tuples could
+	 * miss tuples that should be visible to the concurrent build, leading to
+	 * incomplete or inconsistent indexes.
+	 */
 	if (indexInfo->ii_Concurrent)
 	{
 		elog(DEBUG1, "Index build optimization: skipping concurrent build for MVCC correctness");
@@ -662,9 +668,13 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 
 		foreach(lc, clauses)
 		{
-			/* Unused variable lc is needed for foreach macro */
-			(void) lc;
-			selectivity *= 0.1; /* Very rough estimate */
+			Node *subclause = (Node *) lfirst(lc);
+			/*
+			 * Recursively estimate each subclause. For now we use a simple
+			 * fixed estimate. In a full implementation, this should use
+			 * PostgreSQL's clause selectivity estimation from clausesel.c.
+			 */
+			selectivity *= EstimateClauseSelectivity(subclause, heapRel);
 		}
 		return selectivity;
 	}
