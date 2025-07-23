@@ -37,7 +37,7 @@ struct IndexScanOption
 extern bool enable_index_build_optimization;
 
 /* Main analysis function */
-extern IndexScanOption *AnalyzeIndexBuildOptimization(Relation heapRel, 
+extern IndexScanOption *AnalyzeIndexBuildOptimization(Relation heapRel,
 													 IndexInfo *indexInfo);
 
 #endif							/* INDEX_BUILD_OPTIMIZER_H */

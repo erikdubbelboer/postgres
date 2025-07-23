@@ -50,9 +50,9 @@ bool enable_index_build_optimization = true;
 
 
 /* Function prototypes */
-static List *AnalyzeExistingIndexesForPredicate(Relation heapRel, 
+static List *AnalyzeExistingIndexesForPredicate(Relation heapRel,
 											   List *predicate_clauses);
-static Cost EstimateIndexScanCost(Relation heapRel, Relation indexRel, 
+static Cost EstimateIndexScanCost(Relation heapRel, Relation indexRel,
 								 List *indexQuals, double selectivity);
 static Cost EstimateSequentialScanCost(Relation heapRel);
 static IndexScanOption *ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel);
@@ -64,7 +64,7 @@ static double EstimateClauseSelectivity(Node *clause, Relation heapRel);
 /*
  * AnalyzeIndexBuildOptimization
  *
- * Main entry point for analyzing optimization opportunities for 
+ * Main entry point for analyzing optimization opportunities for
  * CREATE INDEX WHERE statements.
  *
  * Returns an IndexScanOption if optimization is beneficial, NULL otherwise.
@@ -93,7 +93,7 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 
 	/* Analyze existing indexes */
 	index_options = AnalyzeExistingIndexesForPredicate(heapRel, predicate_clauses);
-	
+
 	if (index_options == NIL)
 		return NULL;
 
@@ -136,9 +136,9 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 		indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
 		if (!HeapTupleIsValid(indexTuple))
 			continue; /* Index doesn't exist anymore */
-		
+
 		indexForm = (Form_pg_index) GETSTRUCT(indexTuple);
-		
+
 		/* Skip invalid, not ready, or being built indexes */
 		if (!indexForm->indisvalid || !indexForm->indisready || !indexForm->indislive)
 		{
@@ -165,7 +165,7 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 		indexRel = index_open(indexoid, AccessShareLock);
 
 		/* Try to match predicate clauses to this index */
-		if (ExtractIndexQuals(predicate_clauses, indexRel, 
+		if (ExtractIndexQuals(predicate_clauses, indexRel,
 							 &indexQuals, &remainingQuals))
 		{
 			/* Create option for this index */
@@ -173,7 +173,7 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 			option->indexOid = indexoid;
 			option->indexQuals = indexQuals;
 			option->remainingQuals = remainingQuals;
-			
+
 			/* Estimate selectivity and cost */
 			option->selectivity = EstimateClauseSelectivity(
 				(Node *) indexQuals, heapRel);
@@ -251,7 +251,7 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 						/* Check if the operator is supported by this index */
 						Oid opfamily = indexRel->rd_opfamily[i];
 						Oid opno = opexpr->opno;
-						
+
 						if (get_op_opfamily_strategy(opno, opfamily) > 0)
 						{
 							can_use_index = true;
@@ -265,17 +265,17 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 		{
 			/* Handle IN clauses: column IN (const1, const2, ...) */
 			ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-			
+
 			if (list_length(saop->args) == 2 && saop->useOr)
 			{
 				Node *leftarg = linitial(saop->args);
 				Node *rightarg = lsecond(saop->args);
-				
+
 				if (IsA(leftarg, Var) && IsA(rightarg, Const))
 				{
 					Var *var = (Var *) leftarg;
 					int i;
-					
+
 					/* Check if this variable matches an indexed column */
 					for (i = 0; i < indexRel->rd_index->indnatts; i++)
 					{
@@ -284,7 +284,7 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 							/* Check if the array operator is supported */
 							Oid opfamily = indexRel->rd_opfamily[i];
 							Oid opno = saop->opno;
-							
+
 							if (get_op_opfamily_strategy(opno, opfamily) > 0)
 							{
 								can_use_index = true;
@@ -299,12 +299,12 @@ ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 		{
 			/* Handle IS NULL / IS NOT NULL */
 			NullTest *nulltest = (NullTest *) clause;
-			
+
 			if (IsA(nulltest->arg, Var))
 			{
 				Var *var = (Var *) nulltest->arg;
 				int i;
-				
+
 				/* Check if this variable matches an indexed column */
 				for (i = 0; i < indexRel->rd_index->indnatts; i++)
 				{
@@ -401,7 +401,7 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 				Oid			lefttype;
 				Oid			righttype;
 				Oid			proc;
-				
+
 				/* Look up the operator in the index's operator family */
 				op_strategy = get_op_opfamily_strategy(opno, opfamily);
 				if (op_strategy > 0)
@@ -437,7 +437,7 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 							proc = InvalidOid;
 							break;
 					}
-					
+
 					if (!OidIsValid(proc))
 					{
 						elog(DEBUG1, "Could not find procedure for operator %u in family %u for access method %u",
@@ -447,18 +447,18 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 						*nkeys_built = 0;
 						return NULL;
 					}
-					
+
 					/* Build the scan key */
 					ScanKeyInit(&scankeys[i],
 							   attno,
 							   op_strategy,
 							   proc,
 							   const_val->constvalue);
-					
+
 					/* Handle NULL values */
 					if (const_val->constisnull)
 						scankeys[i].sk_flags |= SK_ISNULL;
-					
+
 					i++;
 				}
 				else
@@ -495,7 +495,7 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
  * Estimate the cost of scanning using the given index with the given quals.
  */
 static Cost
-EstimateIndexScanCost(Relation heapRel, Relation indexRel, 
+EstimateIndexScanCost(Relation heapRel, Relation indexRel,
 					 List *indexQuals, double selectivity)
 {
 	Cost		startup_cost = 0;
@@ -575,7 +575,7 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 		/* Add cost of evaluating remaining predicates */
 		Cost		remaining_cost = 0;
 		Cost		total_cost;
-		
+
 		if (option->remainingQuals != NIL)
 		{
 			double		heap_tuples = heapRel->rd_rel->reltuples;
@@ -585,7 +585,7 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 				heap_tuples = 1000; /* fallback for empty relations */
 
 			filtered_tuples = option->selectivity * heap_tuples;
-			remaining_cost = filtered_tuples * cpu_operator_cost * 
+			remaining_cost = filtered_tuples * cpu_operator_cost *
 							list_length(option->remainingQuals);
 		}
 
