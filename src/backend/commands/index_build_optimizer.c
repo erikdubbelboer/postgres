@@ -484,37 +484,15 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 													 BTORDER_PROC);
 							break;
 						case HASH_AM_OID:
-
-							/*
-							 * Hash indexes use hash functions instead of
-							 * comparison
-							 */
+							/* Hash indexes use hash functions instead of comparison */
 							proc = get_opfamily_proc(opfamily, opcintype, opcintype,
 													 HASHSTANDARD_PROC);
 							break;
-						case GIST_AM_OID:
-						case GIN_AM_OID:
-						case SPGIST_AM_OID:
-						case BRIN_AM_OID:
-
-							/*
-							 * These access methods have more complex operator
-							 * semantics
-							 */
-
-							/*
-							 * For now, skip them to keep the implementation
-							 * simple
-							 */
-							if (debug_index_build_optimization)
-								elog(DEBUG1, "Access method %u not yet supported for optimization",
-									 indexRel->rd_rel->relam);
-							proc = InvalidOid;
-							break;
 						default:
-							/* Unknown access method */
+							/* Unsupported access method */
 							if (debug_index_build_optimization)
-								elog(DEBUG1, "Unknown access method %u", indexRel->rd_rel->relam);
+								elog(DEBUG1, "Access method %u not supported for optimization",
+									 indexRel->rd_rel->relam);
 							proc = InvalidOid;
 							break;
 					}
@@ -556,6 +534,9 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 	/* If we couldn't build any scan keys, return NULL */
 	if (i == 0)
 	{
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: could not build any scan keys from %d index quals for index %u",
+				 nkeys, indexRel->rd_id);
 		pfree(scankeys);
 		*nkeys_built = 0;
 		return NULL;
@@ -691,8 +672,8 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 /*
  * EstimateClauseSelectivity
  *
- * Estimate selectivity of a clause or list of clauses using PostgreSQL's
- * built-in selectivity estimation functions where possible.
+ * Estimate selectivity of a clause or list of clauses.
+ * Uses a simplified approach suitable for index build optimization.
  */
 static double
 EstimateClauseSelectivity(Node *clause, Relation heapRel)
@@ -715,10 +696,8 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 	else if (IsA(clause, OpExpr))
 	{
 		OpExpr	   *opexpr = (OpExpr *) clause;
-		Oid			opno = opexpr->opno;
 		Var		   *var = NULL;
 		Const	   *const_val = NULL;
-		double		selectivity = DEFAULT_SELECTIVITY_ESTIMATE;
 
 		/* Look for patterns: var op const, const op var */
 		if (list_length(opexpr->args) == 2)
@@ -738,9 +717,12 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 			}
 		}
 
-		if (var && const_val)
+		if (var && const_val && var->varattno > 0 && var->varattno <= heapRel->rd_att->natts)
 		{
-			/* Try to get better estimates based on operator type */
+			/* Use statistics-based estimation for equality operators */
+			Oid			opno = opexpr->opno;
+			double		stadistinct = get_attribute_numdistinct(heapRel, var->varattno);
+
 			switch (opno)
 			{
 				case F_TEXTEQ:	/* text = text */
@@ -751,28 +733,8 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 				case F_INT2EQ:	/* int2 = int2 */
 				case F_OIDEQ:	/* oid = oid */
 				case F_BOOLEQ:	/* bool = bool */
-					/* Equality operators - use more precise estimates */
-					if (var->varattno > 0 && var->varattno <= heapRel->rd_att->natts)
-					{
-						/*
-						 * For equality predicates, estimate based on the
-						 * number of distinct values. This is a simplified
-						 * version of what eqsel() does in selfuncs.c.
-						 */
-						Form_pg_attribute attr = TupleDescAttr(heapRel->rd_att, var->varattno - 1);
-						double		stadistinct = get_attribute_numdistinct(heapRel, var->varattno);
-
-						if (stadistinct > 1.0)
-							selectivity = 1.0 / stadistinct;
-						else
-							selectivity = 0.1;	/* reasonable default for
-												 * equality */
-					}
-					else
-					{
-						selectivity = 0.1;	/* default for equality */
-					}
-					break;
+					/* Equality - selectivity = 1/distinct_values */
+					return stadistinct > 1.0 ? (1.0 / stadistinct) : 0.1;
 
 				case F_TEXTNE:	/* text <> text */
 				case F_CHARNE:	/* char <> char */
@@ -782,22 +744,8 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 				case F_INT2NE:	/* int2 <> int2 */
 				case F_OIDNE:	/* oid <> oid */
 				case F_BOOLNE:	/* bool <> bool */
-					/* Inequality operators - complement of equality */
-					if (var->varattno > 0 && var->varattno <= heapRel->rd_att->natts)
-					{
-						double		stadistinct = get_attribute_numdistinct(heapRel, var->varattno);
-
-						if (stadistinct > 1.0)
-							selectivity = 1.0 - (1.0 / stadistinct);
-						else
-							selectivity = 0.9;	/* complement of default
-												 * equality */
-					}
-					else
-					{
-						selectivity = 0.9;	/* complement of default equality */
-					}
-					break;
+					/* Inequality - complement of equality */
+					return stadistinct > 1.0 ? (1.0 - 1.0 / stadistinct) : 0.9;
 
 				case F_INT4LT:	/* int4 < int4 */
 				case F_INT8LT:	/* int8 < int8 */
@@ -811,18 +759,15 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 				case F_INT4GE:	/* int4 >= int4 */
 				case F_INT8GE:	/* int8 >= int8 */
 				case F_INT2GE:	/* int2 >= int2 */
-					/* Range operators - moderate selectivity */
-					selectivity = 0.33;
-					break;
+					/* Range operators - use moderate selectivity */
+					return 0.33;
 
 				default:
-					/* Unknown operator - use default */
-					selectivity = DEFAULT_SELECTIVITY_ESTIMATE;
 					break;
 			}
 		}
 
-		return selectivity;
+		return DEFAULT_SELECTIVITY_ESTIMATE;
 	}
 	else if (IsA(clause, ScalarArrayOpExpr))
 	{
@@ -831,25 +776,15 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 		if (saop->useOr && IsA(lsecond(saop->args), Const))
 		{
 			Const	   *arrayconst = (Const *) lsecond(saop->args);
-			ArrayType  *arrayval;
-			int			nelems;
 
 			if (!arrayconst->constisnull)
 			{
-				arrayval = DatumGetArrayTypeP(arrayconst->constvalue);
-				nelems = ArrayGetNItems(ARR_NDIM(arrayval), ARR_DIMS(arrayval));
+				ArrayType  *arrayval = DatumGetArrayTypeP(arrayconst->constvalue);
+				int			nelems = ArrayGetNItems(ARR_NDIM(arrayval), ARR_DIMS(arrayval));
 
-				/*
-				 * For IN clauses, estimate as number of values * equality
-				 * selectivity
-				 */
+				/* For IN clauses, estimate as number of values * equality selectivity */
 				if (nelems > 0)
-				{
-					double		eq_selectivity = 0.1;	/* default equality
-														 * selectivity */
-
-					return Min(1.0, nelems * eq_selectivity);
-				}
+					return Min(1.0, nelems * 0.1);
 			}
 		}
 
@@ -861,29 +796,15 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 
 		if (IsA(nulltest->arg, Var))
 		{
-			/* NULL tests - estimate based on nullfrac if available */
-			if (nulltest->nulltesttype == IS_NULL)
-			{
-				/*
-				 * IS NULL - typically low selectivity unless column allows
-				 * many nulls
-				 */
-				return 0.01;
-			}
-			else
-			{
-				/* IS NOT NULL - typically high selectivity */
-				return 0.99;
-			}
+			/* NULL tests - simple estimates */
+			return (nulltest->nulltesttype == IS_NULL) ? 0.01 : 0.99;
 		}
 
 		return DEFAULT_SELECTIVITY_ESTIMATE;
 	}
-	else
-	{
-		/* Unknown clause type - use default estimate */
-		return DEFAULT_SELECTIVITY_ESTIMATE;
-	}
+	
+	/* Unknown clause type - use default estimate */
+	return DEFAULT_SELECTIVITY_ESTIMATE;
 }
 
 /*
