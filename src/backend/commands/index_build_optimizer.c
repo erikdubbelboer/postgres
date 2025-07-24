@@ -27,6 +27,7 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_statistic.h"
 #include "commands/defrem.h"
 #include "commands/index_build_optimizer.h"
 #include "executor/executor.h"
@@ -42,6 +43,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/selfuncs.h"
 #include "utils/syscache.h"
 
 /* GUC parameter to enable/disable optimization */
@@ -62,6 +64,7 @@ static bool ExtractIndexQuals(List *predicate_clauses, Relation indexRel,
 							  List **indexQuals, List **remainingQuals);
 static ScanKey BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built);
 static double EstimateClauseSelectivity(Node *clause, Relation heapRel);
+static double get_attribute_numdistinct(Relation rel, AttrNumber attnum);
 
 /*
  * AnalyzeIndexBuildOptimization
@@ -688,13 +691,12 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 /*
  * EstimateClauseSelectivity
  *
- * Estimate selectivity of a clause or list of clauses.
- * This is a very simplified implementation.
+ * Estimate selectivity of a clause or list of clauses using PostgreSQL's
+ * built-in selectivity estimation functions where possible.
  */
 static double
 EstimateClauseSelectivity(Node *clause, Relation heapRel)
 {
-	/* Default selectivity estimate */
 	if (IsA(clause, List))
 	{
 		/* For multiple clauses, multiply selectivities */
@@ -706,18 +708,224 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 		{
 			Node	   *subclause = (Node *) lfirst(lc);
 
-			/*
-			 * Recursively estimate each subclause. For now we use a simple
-			 * fixed estimate. In a full implementation, this should use
-			 * PostgreSQL's clause selectivity estimation from clausesel.c.
-			 */
 			selectivity *= EstimateClauseSelectivity(subclause, heapRel);
 		}
 		return selectivity;
 	}
-	else
+	else if (IsA(clause, OpExpr))
 	{
-		/* Single clause - default estimate */
+		OpExpr	   *opexpr = (OpExpr *) clause;
+		Oid			opno = opexpr->opno;
+		Var		   *var = NULL;
+		Const	   *const_val = NULL;
+		double		selectivity = DEFAULT_SELECTIVITY_ESTIMATE;
+
+		/* Look for patterns: var op const, const op var */
+		if (list_length(opexpr->args) == 2)
+		{
+			Node	   *leftarg = linitial(opexpr->args);
+			Node	   *rightarg = lsecond(opexpr->args);
+
+			if (IsA(leftarg, Var) && IsA(rightarg, Const))
+			{
+				var = (Var *) leftarg;
+				const_val = (Const *) rightarg;
+			}
+			else if (IsA(rightarg, Var) && IsA(leftarg, Const))
+			{
+				var = (Var *) rightarg;
+				const_val = (Const *) leftarg;
+			}
+		}
+
+		if (var && const_val)
+		{
+			/* Try to get better estimates based on operator type */
+			switch (opno)
+			{
+				case F_TEXTEQ:	/* text = text */
+				case F_CHAREQ:	/* char = char */
+				case F_NAMEEQ:	/* name = name */
+				case F_INT4EQ:	/* int4 = int4 */
+				case F_INT8EQ:	/* int8 = int8 */
+				case F_INT2EQ:	/* int2 = int2 */
+				case F_OIDEQ:	/* oid = oid */
+				case F_BOOLEQ:	/* bool = bool */
+					/* Equality operators - use more precise estimates */
+					if (var->varattno > 0 && var->varattno <= heapRel->rd_att->natts)
+					{
+						/*
+						 * For equality predicates, estimate based on the
+						 * number of distinct values. This is a simplified
+						 * version of what eqsel() does in selfuncs.c.
+						 */
+						Form_pg_attribute attr = TupleDescAttr(heapRel->rd_att, var->varattno - 1);
+						double		stadistinct = get_attribute_numdistinct(heapRel, var->varattno);
+
+						if (stadistinct > 1.0)
+							selectivity = 1.0 / stadistinct;
+						else
+							selectivity = 0.1;	/* reasonable default for
+												 * equality */
+					}
+					else
+					{
+						selectivity = 0.1;	/* default for equality */
+					}
+					break;
+
+				case F_TEXTNE:	/* text <> text */
+				case F_CHARNE:	/* char <> char */
+				case F_NAMENE:	/* name <> name */
+				case F_INT4NE:	/* int4 <> int4 */
+				case F_INT8NE:	/* int8 <> int8 */
+				case F_INT2NE:	/* int2 <> int2 */
+				case F_OIDNE:	/* oid <> oid */
+				case F_BOOLNE:	/* bool <> bool */
+					/* Inequality operators - complement of equality */
+					if (var->varattno > 0 && var->varattno <= heapRel->rd_att->natts)
+					{
+						double		stadistinct = get_attribute_numdistinct(heapRel, var->varattno);
+
+						if (stadistinct > 1.0)
+							selectivity = 1.0 - (1.0 / stadistinct);
+						else
+							selectivity = 0.9;	/* complement of default
+												 * equality */
+					}
+					else
+					{
+						selectivity = 0.9;	/* complement of default equality */
+					}
+					break;
+
+				case F_INT4LT:	/* int4 < int4 */
+				case F_INT8LT:	/* int8 < int8 */
+				case F_INT2LT:	/* int2 < int2 */
+				case F_INT4LE:	/* int4 <= int4 */
+				case F_INT8LE:	/* int8 <= int8 */
+				case F_INT2LE:	/* int2 <= int2 */
+				case F_INT4GT:	/* int4 > int4 */
+				case F_INT8GT:	/* int8 > int8 */
+				case F_INT2GT:	/* int2 > int2 */
+				case F_INT4GE:	/* int4 >= int4 */
+				case F_INT8GE:	/* int8 >= int8 */
+				case F_INT2GE:	/* int2 >= int2 */
+					/* Range operators - moderate selectivity */
+					selectivity = 0.33;
+					break;
+
+				default:
+					/* Unknown operator - use default */
+					selectivity = DEFAULT_SELECTIVITY_ESTIMATE;
+					break;
+			}
+		}
+
+		return selectivity;
+	}
+	else if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		if (saop->useOr && IsA(lsecond(saop->args), Const))
+		{
+			Const	   *arrayconst = (Const *) lsecond(saop->args);
+			ArrayType  *arrayval;
+			int			nelems;
+
+			if (!arrayconst->constisnull)
+			{
+				arrayval = DatumGetArrayTypeP(arrayconst->constvalue);
+				nelems = ArrayGetNItems(ARR_NDIM(arrayval), ARR_DIMS(arrayval));
+
+				/*
+				 * For IN clauses, estimate as number of values * equality
+				 * selectivity
+				 */
+				if (nelems > 0)
+				{
+					double		eq_selectivity = 0.1;	/* default equality
+														 * selectivity */
+
+					return Min(1.0, nelems * eq_selectivity);
+				}
+			}
+		}
+
 		return DEFAULT_SELECTIVITY_ESTIMATE;
 	}
+	else if (IsA(clause, NullTest))
+	{
+		NullTest   *nulltest = (NullTest *) clause;
+
+		if (IsA(nulltest->arg, Var))
+		{
+			/* NULL tests - estimate based on nullfrac if available */
+			if (nulltest->nulltesttype == IS_NULL)
+			{
+				/*
+				 * IS NULL - typically low selectivity unless column allows
+				 * many nulls
+				 */
+				return 0.01;
+			}
+			else
+			{
+				/* IS NOT NULL - typically high selectivity */
+				return 0.99;
+			}
+		}
+
+		return DEFAULT_SELECTIVITY_ESTIMATE;
+	}
+	else
+	{
+		/* Unknown clause type - use default estimate */
+		return DEFAULT_SELECTIVITY_ESTIMATE;
+	}
+}
+
+/*
+ * get_attribute_numdistinct
+ *
+ * Get the number of distinct values for a table attribute from pg_statistic.
+ * Returns -1.0 if no statistics are available.
+ */
+static double
+get_attribute_numdistinct(Relation rel, AttrNumber attnum)
+{
+	HeapTuple	statstuple;
+	Form_pg_statistic stats;
+	double		stadistinct = -1.0;
+
+	/* Look up statistics for this attribute */
+	statstuple = SearchSysCache3(STATRELATTINH,
+								 ObjectIdGetDatum(RelationGetRelid(rel)),
+								 Int16GetDatum(attnum),
+								 BoolGetDatum(false));
+
+	if (HeapTupleIsValid(statstuple))
+	{
+		stats = (Form_pg_statistic) GETSTRUCT(statstuple);
+		stadistinct = stats->stadistinct;
+		ReleaseSysCache(statstuple);
+
+		/*
+		 * If stadistinct is negative, it represents a fraction of the table
+		 * size. Convert it to an absolute number using the relation's
+		 * estimated tuple count.
+		 */
+		if (stadistinct < 0.0)
+		{
+			double		ntuples = rel->rd_rel->reltuples;
+
+			if (ntuples > 0)
+				stadistinct = -stadistinct * ntuples;
+			else
+				stadistinct = DEFAULT_NUM_DISTINCT;
+		}
+	}
+
+	return stadistinct;
 }

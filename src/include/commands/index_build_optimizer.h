@@ -25,6 +25,8 @@
 												 * optimization */
 #define DEFAULT_SELECTIVITY_ESTIMATE		0.1 /* Default selectivity for
 												 * clauses */
+#define DEFAULT_NUM_DISTINCT				200 /* Default number of distinct
+												 * values */
 #define MEMORY_RESET_FREQUENCY				1000	/* How often to reset
 													 * expression context */
 
