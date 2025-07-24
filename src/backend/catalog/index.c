@@ -3005,17 +3005,21 @@ build_with_optimized_scan(Relation heapRelation,
 	Oid			save_userid;
 	int			save_sec_context;
 
-	elog(DEBUG1, "Index build optimization: using existing index OID %u for filtering",
-		 scan_option->indexOid);
-	elog(DEBUG1, "Index build optimization: estimated selectivity %g with %d index quals",
-		 scan_option->selectivity, list_length(scan_option->indexQuals));
+	if (debug_index_build_optimization)
+	{
+		elog(DEBUG1, "Index build optimization: using existing index OID %u for filtering",
+			 scan_option->indexOid);
+		elog(DEBUG1, "Index build optimization: estimated selectivity %g with %d index quals",
+			 scan_option->selectivity, list_length(scan_option->indexQuals));
+	}
 
 	/*
 	 * Fall back to normal building if we don't have proper scan keys
 	 */
 	if (scan_option->scankeys == NULL || scan_option->nkeys == 0)
 	{
-		elog(DEBUG1, "Index build optimization: falling back due to missing scan keys");
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: falling back due to missing scan keys");
 		return indexRelation->rd_indam->ambuild(heapRelation, indexRelation, indexInfo);
 	}
 
@@ -3150,8 +3154,9 @@ build_with_optimized_scan(Relation heapRelation,
 		FreeExecutorState(estate);
 		ExecDropSingleTupleTableSlot(slot);
 
-		elog(DEBUG1, "Index build optimization: found %.0f candidate tuples via index scan",
-			 heap_tuples);
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: found %.0f candidate tuples via index scan",
+				 heap_tuples);
 	}
 	PG_CATCH();
 	{
@@ -3165,7 +3170,8 @@ build_with_optimized_scan(Relation heapRelation,
 		/* Restore userid on error */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 
-		elog(DEBUG1, "Index build optimization: error occurred, falling back to normal build");
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: error occurred, falling back to normal build");
 
 		/* Re-throw the error if it's critical, otherwise fall back */
 		PG_RE_THROW();
@@ -3187,8 +3193,9 @@ build_with_optimized_scan(Relation heapRelation,
 		result->heap_tuples = heap_tuples;
 		result->index_tuples = reltuples;
 
-		elog(DEBUG1, "Index build optimization: completed optimized build with %.0f index tuples from %.0f heap tuples",
-			 reltuples, heap_tuples);
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: completed optimized build with %.0f index tuples from %.0f heap tuples",
+				 reltuples, heap_tuples);
 
 		return result;
 	}

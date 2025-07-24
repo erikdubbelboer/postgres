@@ -47,6 +47,9 @@
 /* GUC parameter to enable/disable optimization */
 bool		enable_index_build_optimization = true;
 
+/* GUC parameter to enable/disable debug logging */
+bool		debug_index_build_optimization = false;
+
 
 /* Function prototypes */
 static List *AnalyzeExistingIndexesForPredicate(Relation heapRel,
@@ -115,7 +118,8 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 	 */
 	if (indexInfo->ii_Concurrent)
 	{
-		elog(DEBUG1, "Index build optimization: skipping concurrent build for MVCC correctness");
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: skipping concurrent build for MVCC correctness");
 		return NULL;
 	}
 
@@ -215,7 +219,8 @@ AnalyzeExistingIndexesForPredicate(Relation heapRel, List *predicate_clauses)
 		/* Check if access method is supported */
 		if (indexRel->rd_rel->relam != BTREE_AM_OID && indexRel->rd_rel->relam != HASH_AM_OID)
 		{
-			elog(DEBUG1, "Index build optimization: unsupported access method for index %u, skipping", indexoid);
+			if (debug_index_build_optimization)
+				elog(DEBUG1, "Index build optimization: unsupported access method for index %u, skipping", indexoid);
 			index_close(indexRel, AccessShareLock);
 			continue;
 		}
@@ -498,21 +503,24 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 							 * For now, skip them to keep the implementation
 							 * simple
 							 */
-							elog(DEBUG1, "Access method %u not yet supported for optimization",
-								 indexRel->rd_rel->relam);
+							if (debug_index_build_optimization)
+								elog(DEBUG1, "Access method %u not yet supported for optimization",
+									 indexRel->rd_rel->relam);
 							proc = InvalidOid;
 							break;
 						default:
 							/* Unknown access method */
-							elog(DEBUG1, "Unknown access method %u", indexRel->rd_rel->relam);
+							if (debug_index_build_optimization)
+								elog(DEBUG1, "Unknown access method %u", indexRel->rd_rel->relam);
 							proc = InvalidOid;
 							break;
 					}
 
 					if (!OidIsValid(proc))
 					{
-						elog(DEBUG1, "Could not find procedure for operator %u in family %u for access method %u",
-							 opno, opfamily, indexRel->rd_rel->relam);
+						if (debug_index_build_optimization)
+							elog(DEBUG1, "Could not find procedure for operator %u in family %u for access method %u",
+								 opno, opfamily, indexRel->rd_rel->relam);
 						/* Cannot build scan key without valid procedure */
 						pfree(scankeys);
 						*nkeys_built = 0;
@@ -534,8 +542,9 @@ BuildScanKeysFromQuals(List *indexQuals, Relation indexRel, int *nkeys_built)
 				}
 				else
 				{
-					elog(DEBUG1, "Could not find strategy for operator %u in family %u",
-						 opno, opfamily);
+					if (debug_index_build_optimization)
+						elog(DEBUG1, "Could not find strategy for operator %u in family %u",
+							 opno, opfamily);
 				}
 			}
 		}

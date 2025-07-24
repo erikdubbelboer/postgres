@@ -32,8 +32,9 @@ CREATE INDEX idx_status ON index_opt_test(status);
 CREATE INDEX idx_category ON index_opt_test(category);
 CREATE INDEX idx_active ON index_opt_test(active);
 
--- Enable optimization and logging
+-- Enable optimization and debug logging
 SET enable_index_build_optimization = true;
+SET debug_index_build_optimization = true;
 SET client_min_messages = DEBUG1;
 
 -- Test 1: Simple equality predicate (should use optimization)

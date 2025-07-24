@@ -43,8 +43,9 @@ struct IndexScanOption
 	ScanKey		scankeys;		/* Prepared scan keys */
 };
 
-/* GUC parameter */
+/* GUC parameters */
 extern bool enable_index_build_optimization;
+extern bool debug_index_build_optimization;
 
 /* Main analysis function */
 extern IndexScanOption * AnalyzeIndexBuildOptimization(Relation heapRel,

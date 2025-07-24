@@ -831,6 +831,15 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"debug_index_build_optimization", PGC_USERSET, LOGGING_WHAT,
+			gettext_noop("Enables debug logging for index build optimization."),
+			NULL
+		},
+		&debug_index_build_optimization,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"enable_bitmapscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of bitmap-scan plans."),
 			NULL,
