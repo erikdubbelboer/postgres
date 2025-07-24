@@ -18,6 +18,16 @@
 #include "nodes/execnodes.h"
 #include "utils/rel.h"
 
+/* Constants for index build optimization */
+#define DEFAULT_HEAP_TUPLES_ESTIMATE		1000	/* Default estimate for
+													 * empty relations */
+#define OPTIMIZATION_COST_THRESHOLD			0.8 /* Cost threshold for
+												 * optimization */
+#define DEFAULT_SELECTIVITY_ESTIMATE		0.1 /* Default selectivity for
+												 * clauses */
+#define MEMORY_RESET_FREQUENCY				1000	/* How often to reset
+													 * expression context */
+
 /* Forward declaration */
 typedef struct IndexScanOption IndexScanOption;
 

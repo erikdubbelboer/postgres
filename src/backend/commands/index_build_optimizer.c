@@ -95,11 +95,23 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 
 	/*
 	 * Skip optimization for concurrent builds due to MVCC correctness
-	 * concerns. Concurrent index builds use a different snapshot management
-	 * strategy where they need to see all committed tuples that exist at
-	 * different points in time during the build process. Using an existing
-	 * index to filter tuples could miss tuples that should be visible to the
-	 * concurrent build, leading to incomplete or inconsistent indexes.
+	 * concerns.
+	 *
+	 * Concurrent index builds use a complex multi-phase process: 1. Phase 1:
+	 * Build index with a snapshot that sees all committed tuples 2. Phase 2:
+	 * Wait for concurrent transactions and validate new tuples 3. Phase 3:
+	 * Mark index as ready after ensuring visibility consistency
+	 *
+	 * Specific MVCC issues with optimization: - Tuples inserted during phase
+	 * 1 might not be visible to our filtering index - Updates to existing
+	 * tuples could create visibility inconsistencies - The optimization's
+	 * snapshot might be too restrictive compared to what the concurrent build
+	 * process expects to see - Different phases of concurrent build see
+	 * different sets of tuples
+	 *
+	 * Using an existing index to filter could miss tuples that should be
+	 * included, resulting in incomplete indexes that violate uniqueness
+	 * constraints or miss valid data.
 	 */
 	if (indexInfo->ii_Concurrent)
 	{
@@ -566,7 +578,7 @@ EstimateIndexScanCost(Relation heapRel, Relation indexRel,
 	/* Get basic relation statistics */
 	heap_tuples = heapRel->rd_rel->reltuples;
 	if (heap_tuples <= 0)
-		heap_tuples = 1000;		/* default estimate */
+		heap_tuples = DEFAULT_HEAP_TUPLES_ESTIMATE;
 
 	index_pages = indexRel->rd_rel->relpages;
 	if (index_pages <= 0)
@@ -606,7 +618,7 @@ EstimateSequentialScanCost(Relation heapRel)
 	if (heap_pages <= 0)
 		heap_pages = 1;
 	if (heap_tuples <= 0)
-		heap_tuples = 1000;
+		heap_tuples = DEFAULT_HEAP_TUPLES_ESTIMATE;
 
 	/* Sequential scan cost */
 	run_cost = heap_pages * seq_page_cost;
@@ -641,7 +653,7 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 			double		filtered_tuples;
 
 			if (heap_tuples <= 0)
-				heap_tuples = 1000; /* fallback for empty relations */
+				heap_tuples = DEFAULT_HEAP_TUPLES_ESTIMATE;
 
 			filtered_tuples = option->selectivity * heap_tuples;
 			remaining_cost = filtered_tuples * cpu_operator_cost *
@@ -658,7 +670,7 @@ ChooseOptimalScanMethod(List *options, Cost seqscan_cost, Relation heapRel)
 	}
 
 	/* Only use optimization if it's significantly better */
-	if (best_option && best_cost < seqscan_cost * 0.8)
+	if (best_option && best_cost < seqscan_cost * OPTIMIZATION_COST_THRESHOLD)
 		return best_option;
 
 	return NULL;
@@ -697,6 +709,6 @@ EstimateClauseSelectivity(Node *clause, Relation heapRel)
 	else
 	{
 		/* Single clause - default estimate */
-		return 0.1;
+		return DEFAULT_SELECTIVITY_ESTIMATE;
 	}
 }

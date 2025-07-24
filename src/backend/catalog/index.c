@@ -3107,7 +3107,7 @@ build_with_optimized_scan(Relation heapRelation,
 
 				/* Reset context periodically to avoid memory leaks */
 				tuples_processed++;
-				if (tuples_processed % 1000 == 0)
+				if (tuples_processed % MEMORY_RESET_FREQUENCY == 0)
 					ResetExprContext(predicate_econtext);
 			}
 			else
@@ -3121,10 +3121,13 @@ build_with_optimized_scan(Relation heapRelation,
 				reltuples++;
 
 				/*
-				 * Extract index values from the heap tuple. TODO: For simple
-				 * column references, this could be optimized by caching
-				 * expression evaluation or using direct slot access rather
-				 * than going through the full FormIndexDatum machinery.
+				 * Extract index values from the heap tuple. Note:
+				 * FormIndexDatum already optimizes simple column references
+				 * with direct slot access. The main overhead is expression
+				 * context setup and the function call itself. For indexes
+				 * with only simple column references, we could potentially
+				 * inline the slot_getattr calls, but the performance gain
+				 * would be minimal.
 				 */
 				econtext->ecxt_scantuple = slot;
 				FormIndexDatum(indexInfo, slot, estate, values, isnull);
