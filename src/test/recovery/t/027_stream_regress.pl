@@ -33,6 +33,12 @@ compute_query_id = 'regress'
 # some test queries.  Disable synchronized seqscans to prevent that.
 $node_primary->append_conf('postgresql.conf', 'synchronize_seqscans = off');
 
+# Disable debug logging for index build optimization to match expected output
+$node_primary->append_conf('postgresql.conf', 'debug_index_build_optimization = off');
+
+# Disable statement logging to match expected regression test output
+$node_primary->append_conf('postgresql.conf', 'log_statement = none');
+
 # WAL consistency checking is resource intensive so require opt-in with the
 # PG_TEST_EXTRA environment variable.
 if (   $ENV{PG_TEST_EXTRA}

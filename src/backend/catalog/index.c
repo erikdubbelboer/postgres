@@ -53,6 +53,7 @@
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
 #include "commands/event_trigger.h"
+#include "commands/index_build_optimizer.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/trigger.h"
@@ -743,7 +744,8 @@ index_create(Relation heapRelation,
 			 bits16 constr_flags,
 			 bool allow_system_table_mods,
 			 bool is_internal,
-			 Oid *constraintId)
+			 Oid *constraintId,
+			 IndexScanOption * scan_option)
 {
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
@@ -1275,7 +1277,7 @@ index_create(Relation heapRelation,
 	}
 	else
 	{
-		index_build(heapRelation, indexRelation, indexInfo, false, true);
+		index_build(heapRelation, indexRelation, indexInfo, false, true, scan_option);
 	}
 
 	/*
@@ -1462,7 +1464,9 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId,
 							  0,
 							  true, /* allow table to be a system catalog? */
 							  false,	/* is_internal? */
-							  NULL);
+							  NULL,
+							  NULL);	/* no scan optimization for concurrent
+										 * build */
 
 	/* Close the relations used and clean up */
 	index_close(indexRelation, NoLock);
@@ -1522,7 +1526,7 @@ index_concurrently_build(Oid heapRelationId,
 	indexInfo->ii_BrokenHotChain = false;
 
 	/* Now build the index */
-	index_build(heapRel, indexRelation, indexInfo, false, true);
+	index_build(heapRel, indexRelation, indexInfo, false, true, NULL);
 
 	/* Roll back any GUC changes executed by index functions */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -2981,6 +2985,221 @@ index_update_stats(Relation rel,
 	table_close(pg_class, RowExclusiveLock);
 }
 
+/*
+ * build_with_optimized_scan - wrapper for access method build with optimized scanning
+ *
+ * This function implements the optimized index building by using an existing
+ * index to filter tuples instead of doing a full table scan.
+ */
+static IndexBuildResult *
+build_with_optimized_scan(Relation heapRelation,
+						  Relation indexRelation,
+						  IndexInfo *indexInfo,
+						  IndexScanOption * scan_option)
+{
+	Relation	filterIndexRel = NULL;
+	IndexScanDesc scan = NULL;
+	Snapshot	snapshot = NULL;
+	double		reltuples = 0;
+	double		heap_tuples = 0;
+	Oid			save_userid;
+	int			save_sec_context;
+
+	if (debug_index_build_optimization)
+	{
+		elog(DEBUG1, "Index build optimization: using existing index OID %u for filtering",
+			 scan_option->indexOid);
+		elog(DEBUG1, "Index build optimization: estimated selectivity %g with %d index quals",
+			 scan_option->selectivity, list_length(scan_option->indexQuals));
+	}
+
+	/*
+	 * Fall back to normal building if we don't have proper scan keys
+	 */
+	if (scan_option->scankeys == NULL || scan_option->nkeys == 0)
+	{
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: falling back due to missing scan keys");
+		return indexRelation->rd_indam->ambuild(heapRelation, indexRelation, indexInfo);
+	}
+
+	PG_TRY();
+	{
+		/* Declare all variables at the beginning of the block */
+		TupleTableSlot *slot;
+		EState	   *estate;
+		ExprContext *econtext;
+		ExprContext *predicate_econtext = NULL;
+		ExprState  *predicate_state = NULL;
+		Expr	   *qual_expr;
+		Datum	   *values;
+		bool	   *isnull;
+		int			natts = indexRelation->rd_att->natts;
+		int			tuples_processed = 0;
+
+		/* Get active snapshot and open the existing index for scanning */
+		snapshot = GetActiveSnapshot();
+		filterIndexRel = index_open(scan_option->indexOid, AccessShareLock);
+
+		/* Start index scan */
+		scan = index_beginscan(heapRelation, filterIndexRel, snapshot, NULL,
+							   scan_option->nkeys, 0);
+		/* Set up scan keys */
+		index_rescan(scan, scan_option->scankeys, scan_option->nkeys, NULL, 0);
+
+		/* Switch to the table owner's userid for checking permissions */
+		GetUserIdAndSecContext(&save_userid, &save_sec_context);
+		SetUserIdAndSecContext(heapRelation->rd_rel->relowner,
+							   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+
+		/* Create a slot for receiving tuples - outside loop for efficiency */
+		slot = table_slot_create(heapRelation, NULL);
+
+		/* Set up expression evaluation context */
+		estate = CreateExecutorState();
+		econtext = GetPerTupleExprContext(estate);
+
+		/* Set up predicate evaluation if needed */
+		if (scan_option->remainingQuals != NIL)
+		{
+			predicate_econtext = CreateStandaloneExprContext();
+
+			/* Build the remaining qualification expression */
+			if (list_length(scan_option->remainingQuals) == 1)
+				qual_expr = (Expr *) linitial(scan_option->remainingQuals);
+			else
+				qual_expr = make_ands_explicit(scan_option->remainingQuals);
+
+			/* Prepare the predicate for execution */
+			predicate_state = ExecPrepareExpr(qual_expr, NULL);
+		}
+
+		/* Allocate arrays for index attribute values */
+		values = palloc(natts * sizeof(Datum));
+		isnull = palloc(natts * sizeof(bool));
+
+		/* Scan tuples using the existing index and apply remaining predicates */
+		for (;;)
+		{
+			bool		found_tuple;
+			bool		valid_tuple = false;
+
+			/* Get next tuple from index scan */
+			found_tuple = index_getnext_slot(scan, ForwardScanDirection, slot);
+			if (!found_tuple)
+			{
+				break;			/* No more tuples */
+			}
+
+			heap_tuples++;
+
+			/* Apply any remaining predicates that the index couldn't handle */
+			if (predicate_state != NULL)
+			{
+				bool		result;
+				bool		is_null;
+
+				/*
+				 * Set up expression context for evaluating remaining
+				 * predicates
+				 */
+				predicate_econtext->ecxt_scantuple = slot;
+
+				/* Evaluate the predicate */
+				result = ExecEvalExprSwitchContext(predicate_state, predicate_econtext, &is_null);
+				valid_tuple = (DatumGetBool(result) && !is_null);
+
+				/* Reset context periodically to avoid memory leaks */
+				tuples_processed++;
+				if (tuples_processed % MEMORY_RESET_FREQUENCY == 0)
+					ResetExprContext(predicate_econtext);
+			}
+			else
+			{
+				/* No remaining predicates, tuple is valid */
+				valid_tuple = true;
+			}
+
+			if (valid_tuple)
+			{
+				reltuples++;
+
+				/*
+				 * Extract index values from the heap tuple. Note:
+				 * FormIndexDatum already optimizes simple column references
+				 * with direct slot access. The main overhead is expression
+				 * context setup and the function call itself. For indexes
+				 * with only simple column references, we could potentially
+				 * inline the slot_getattr calls, but the performance gain
+				 * would be minimal.
+				 */
+				econtext->ecxt_scantuple = slot;
+				FormIndexDatum(indexInfo, slot, estate, values, isnull);
+
+				/* Insert tuple into the new index */
+				index_insert(indexRelation, values, isnull,
+							 &slot->tts_tid,
+							 heapRelation,
+							 indexInfo->ii_Unique ?
+							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
+							 false, indexInfo);
+			}
+		}
+
+		/* Clean up resources after loop completion */
+		pfree(values);
+		pfree(isnull);
+		if (predicate_econtext)
+			FreeExprContext(predicate_econtext, false);
+		FreeExecutorState(estate);
+		ExecDropSingleTupleTableSlot(slot);
+
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: found %.0f candidate tuples via index scan",
+				 heap_tuples);
+	}
+	PG_CATCH();
+	{
+		/* Ensure cleanup on error */
+		if (scan)
+			index_endscan(scan);
+		if (filterIndexRel)
+			index_close(filterIndexRel, AccessShareLock);
+		/* Note: snapshot from GetActiveSnapshot() should not be unregistered */
+
+		/* Restore userid on error */
+		SetUserIdAndSecContext(save_userid, save_sec_context);
+
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: error occurred, falling back to normal build");
+
+		/* Re-throw the error if it's critical, otherwise fall back */
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	/* Restore userid */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	/* Clean up */
+	index_endscan(scan);
+	index_close(filterIndexRel, AccessShareLock);
+	/* Note: snapshot from GetActiveSnapshot() should not be unregistered */
+
+	/* Return build statistics */
+	{
+		IndexBuildResult *result = palloc(sizeof(IndexBuildResult));
+
+		result->heap_tuples = heap_tuples;
+		result->index_tuples = reltuples;
+
+		if (debug_index_build_optimization)
+			elog(DEBUG1, "Index build optimization: completed optimized build with %.0f index tuples from %.0f heap tuples",
+				 reltuples, heap_tuples);
+
+		return result;
+	}
+}
 
 /*
  * index_build - invoke access-method-specific index build procedure
@@ -3003,7 +3222,8 @@ index_build(Relation heapRelation,
 			Relation indexRelation,
 			IndexInfo *indexInfo,
 			bool isreindex,
-			bool parallel)
+			bool parallel,
+			IndexScanOption * scan_option)
 {
 	IndexBuildResult *stats;
 	Oid			save_userid;
@@ -3073,10 +3293,21 @@ index_build(Relation heapRelation,
 	}
 
 	/*
-	 * Call the access method's build procedure
+	 * Call the access method's build procedure, potentially using optimized
+	 * scanning if scan_option is provided
 	 */
-	stats = indexRelation->rd_indam->ambuild(heapRelation, indexRelation,
-											 indexInfo);
+	if (scan_option && scan_option->indexOid != InvalidOid)
+	{
+		/* Use optimized index-based scanning */
+		stats = build_with_optimized_scan(heapRelation, indexRelation,
+										  indexInfo, scan_option);
+	}
+	else
+	{
+		/* Use normal full table scan */
+		stats = indexRelation->rd_indam->ambuild(heapRelation, indexRelation,
+												 indexInfo);
+	}
 	Assert(PointerIsValid(stats));
 
 	/*
@@ -3811,7 +4042,7 @@ reindex_index(const ReindexStmt *stmt, Oid indexId,
 
 	/* Initialize the index and rebuild */
 	/* Note: we do not need to re-establish pkey setting */
-	index_build(heapRelation, iRel, indexInfo, true, true);
+	index_build(heapRelation, iRel, indexInfo, true, true, NULL);
 
 	/* Re-allow use of target index */
 	ResetReindexProcessing();

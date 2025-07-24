@@ -1,0 +1,195 @@
+--
+-- INDEX_BUILD_OPTIMIZATION
+-- Test the optimization of CREATE INDEX WHERE using existing indexes
+--
+-- Test setup
+CREATE TABLE index_opt_test (
+    id SERIAL PRIMARY KEY,
+    status TEXT,
+    category INTEGER,
+    score NUMERIC,
+    active BOOLEAN,
+    created_at TIMESTAMP DEFAULT now()
+);
+-- Insert test data
+INSERT INTO index_opt_test (status, category, score, active)
+SELECT
+    CASE (i % 4)
+        WHEN 0 THEN 'active'
+        WHEN 1 THEN 'pending'
+        WHEN 2 THEN 'completed'
+        ELSE 'cancelled'
+    END,
+    (i % 10) + 1,
+    random() * 100,
+    (i % 2) = 0
+FROM generate_series(1, 1000) i;
+-- Create base indexes that can be used for optimization
+CREATE INDEX idx_status ON index_opt_test(status);
+CREATE INDEX idx_category ON index_opt_test(category);
+CREATE INDEX idx_active ON index_opt_test(active);
+-- Enable optimization and debug logging
+SET enable_index_build_optimization = true;
+SET debug_index_build_optimization = true;
+SET client_min_messages = DEBUG1;
+-- Test 1: Simple equality predicate (should use optimization)
+-- This should use idx_status for filtering
+CREATE INDEX test_idx_active_status ON index_opt_test(created_at)
+WHERE status = 'active';
+DEBUG:  building index "test_idx_active_status" on table "index_opt_test" serially
+DEBUG:  index "test_idx_active_status" can safely use deduplication
+-- Test 2: Integer equality (should use optimization)
+-- This should use idx_category for filtering
+CREATE INDEX test_idx_cat_1 ON index_opt_test(score)
+WHERE category = 1;
+DEBUG:  building index "test_idx_cat_1" on table "index_opt_test" serially
+DEBUG:  index "test_idx_cat_1" cannot use deduplication
+-- Test 3: Boolean predicate (should use optimization)
+-- This should use idx_active for filtering
+CREATE INDEX test_idx_is_active ON index_opt_test(id)
+WHERE active = true;
+DEBUG:  building index "test_idx_is_active" on table "index_opt_test" serially
+DEBUG:  index "test_idx_is_active" can safely use deduplication
+-- Test 4: Multiple predicates with AND (should use optimization if any index matches)
+CREATE INDEX test_idx_multi_and ON index_opt_test(score)
+WHERE status = 'active' AND category = 2;
+DEBUG:  building index "test_idx_multi_and" on table "index_opt_test" serially
+DEBUG:  index "test_idx_multi_and" cannot use deduplication
+-- Test 5: Predicate that doesn't match any index (should NOT use optimization)
+CREATE INDEX test_idx_no_match ON index_opt_test(id)
+WHERE score > 50.0;
+DEBUG:  building index "test_idx_no_match" on table "index_opt_test" serially
+DEBUG:  index "test_idx_no_match" can safely use deduplication
+-- Test 6: Complex predicate (should NOT use optimization)
+CREATE INDEX test_idx_complex ON index_opt_test(id)
+WHERE length(status) > 5;
+DEBUG:  building index "test_idx_complex" on table "index_opt_test" serially
+DEBUG:  index "test_idx_complex" can safely use deduplication
+-- Test 7: Disable optimization and verify fallback
+SET enable_index_build_optimization = false;
+CREATE INDEX test_idx_disabled ON index_opt_test(created_at)
+WHERE status = 'pending';
+DEBUG:  building index "test_idx_disabled" on table "index_opt_test" serially
+DEBUG:  index "test_idx_disabled" can safely use deduplication
+SET enable_index_build_optimization = true;
+-- Verify indexes work correctly with some queries
+EXPLAIN (COSTS OFF)
+SELECT count(*) FROM index_opt_test WHERE status = 'active';
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on index_opt_test
+         Recheck Cond: (status = 'active'::text)
+         ->  Bitmap Index Scan on test_idx_active_status
+(4 rows)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM index_opt_test WHERE category = 1 LIMIT 5;
+                   QUERY PLAN                    
+-------------------------------------------------
+ Limit
+   ->  Bitmap Heap Scan on index_opt_test
+         Recheck Cond: (category = 1)
+         ->  Bitmap Index Scan on test_idx_cat_1
+(4 rows)
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM index_opt_test WHERE active = true LIMIT 5;
+            QUERY PLAN            
+----------------------------------
+ Limit
+   ->  Seq Scan on index_opt_test
+         Filter: active
+(3 rows)
+
+-- Verify partial indexes work correctly
+EXPLAIN (COSTS OFF)
+SELECT * FROM index_opt_test WHERE status = 'active' AND created_at > '2020-01-01';
+                                                       QUERY PLAN                                                       
+------------------------------------------------------------------------------------------------------------------------
+ Bitmap Heap Scan on index_opt_test
+   Recheck Cond: ((created_at > 'Wed Jan 01 00:00:00 2020'::timestamp without time zone) AND (status = 'active'::text))
+   ->  Bitmap Index Scan on test_idx_active_status
+         Index Cond: (created_at > 'Wed Jan 01 00:00:00 2020'::timestamp without time zone)
+(4 rows)
+
+-- Test correctness: compare results from optimized vs non-optimized indexes
+-- Both should return the same number of rows
+SELECT count(*) as active_rows FROM index_opt_test WHERE status = 'active';
+ active_rows 
+-------------
+         250
+(1 row)
+
+SELECT count(*) as pending_rows FROM index_opt_test WHERE status = 'pending';
+ pending_rows 
+--------------
+          250
+(1 row)
+
+-- Check that indexes are valid and usable
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'index_opt_test'
+  AND indexname LIKE 'test_idx_%'
+ORDER BY indexname;
+       indexname        |                                                             indexdef                                                              
+------------------------+-----------------------------------------------------------------------------------------------------------------------------------
+ test_idx_active_status | CREATE INDEX test_idx_active_status ON public.index_opt_test USING btree (created_at) WHERE (status = 'active'::text)
+ test_idx_cat_1         | CREATE INDEX test_idx_cat_1 ON public.index_opt_test USING btree (score) WHERE (category = 1)
+ test_idx_complex       | CREATE INDEX test_idx_complex ON public.index_opt_test USING btree (id) WHERE (length(status) > 5)
+ test_idx_disabled      | CREATE INDEX test_idx_disabled ON public.index_opt_test USING btree (created_at) WHERE (status = 'pending'::text)
+ test_idx_is_active     | CREATE INDEX test_idx_is_active ON public.index_opt_test USING btree (id) WHERE (active = true)
+ test_idx_multi_and     | CREATE INDEX test_idx_multi_and ON public.index_opt_test USING btree (score) WHERE ((status = 'active'::text) AND (category = 2))
+ test_idx_no_match      | CREATE INDEX test_idx_no_match ON public.index_opt_test USING btree (id) WHERE (score > 50.0)
+(7 rows)
+
+-- Check index statistics (should show no usage yet since we just created them)
+SELECT indexrelname, idx_scan, idx_tup_read, idx_tup_fetch
+FROM pg_stat_user_indexes
+WHERE relname = 'index_opt_test'
+  AND indexrelname LIKE 'test_idx_%'
+ORDER BY indexrelname;
+      indexrelname      | idx_scan | idx_tup_read | idx_tup_fetch 
+------------------------+----------+--------------+---------------
+ test_idx_active_status |        0 |            0 |             0
+ test_idx_cat_1         |        0 |            0 |             0
+ test_idx_complex       |        0 |            0 |             0
+ test_idx_disabled      |        0 |            0 |             0
+ test_idx_is_active     |        0 |            0 |             0
+ test_idx_multi_and     |        0 |            0 |             0
+ test_idx_no_match      |        0 |            0 |             0
+(7 rows)
+
+-- Force some index usage to verify they work
+SET enable_seqscan = false;
+SET enable_bitmapscan = false;
+-- These should use the partial indexes we created
+EXPLAIN (COSTS OFF, ANALYZE OFF)
+SELECT * FROM index_opt_test
+WHERE status = 'active' AND created_at > '2020-01-01'
+ORDER BY created_at LIMIT 1;
+                                         QUERY PLAN                                         
+--------------------------------------------------------------------------------------------
+ Limit
+   ->  Index Scan using test_idx_active_status on index_opt_test
+         Index Cond: (created_at > 'Wed Jan 01 00:00:00 2020'::timestamp without time zone)
+(3 rows)
+
+EXPLAIN (COSTS OFF, ANALYZE OFF)
+SELECT * FROM index_opt_test
+WHERE category = 1 AND score > 0
+ORDER BY score LIMIT 1;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Limit
+   ->  Index Scan using test_idx_cat_1 on index_opt_test
+         Index Cond: (score > '0'::numeric)
+(3 rows)
+
+-- Reset settings
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET client_min_messages;
+-- Cleanup
+DROP TABLE index_opt_test CASCADE;

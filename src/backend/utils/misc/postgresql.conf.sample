@@ -410,6 +410,8 @@
 #enable_hashagg = on
 #enable_hashjoin = on
 #enable_incremental_sort = on
+#enable_index_build_optimization = on
+#debug_index_build_optimization = off
 #enable_indexscan = on
 #enable_indexonlyscan = on
 #enable_material = on
