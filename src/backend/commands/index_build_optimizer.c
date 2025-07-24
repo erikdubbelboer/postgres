@@ -97,16 +97,17 @@ AnalyzeIndexBuildOptimization(Relation heapRel, IndexInfo *indexInfo)
 	 * Skip optimization for concurrent builds due to MVCC correctness
 	 * concerns.
 	 *
-	 * Concurrent index builds use a complex multi-phase process:
-	 *   1. Phase 1: Build index with a snapshot that sees all committed tuples
-	 *   2. Phase 2: Wait for concurrent transactions and validate new tuples
-	 *   3. Phase 3: Mark index as ready after ensuring visibility consistency
+	 * Concurrent index builds use a complex multi-phase process: 1. Phase 1:
+	 * Build index with a snapshot that sees all committed tuples 2. Phase 2:
+	 * Wait for concurrent transactions and validate new tuples 3. Phase 3:
+	 * Mark index as ready after ensuring visibility consistency
 	 *
-	 * Specific MVCC issues with optimization:
-	 *   - Tuples inserted during phase 1 might not be visible to our filtering index
-	 *   - Updates to existing tuples could create visibility inconsistencies
-	 *   - The optimization's snapshot might be too restrictive compared to what the concurrent build process expects to see
-	 *   - Different phases of concurrent build see different sets of tuples
+	 * Specific MVCC issues with optimization: - Tuples inserted during phase
+	 * 1 might not be visible to our filtering index - Updates to existing
+	 * tuples could create visibility inconsistencies - The optimization's
+	 * snapshot might be too restrictive compared to what the concurrent build
+	 * process expects to see - Different phases of concurrent build see
+	 * different sets of tuples
 	 *
 	 * Using an existing index to filter could miss tuples that should be
 	 * included, resulting in incomplete indexes that violate uniqueness
